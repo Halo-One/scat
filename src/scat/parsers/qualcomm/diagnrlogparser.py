@@ -133,6 +133,7 @@ class DiagNrLogParser:
                 'arfcn': meas_carrier_list.raster_arfcn,
                 'serving_pci': meas_carrier_list.serv_cell_pci,
                 'serving_ssb': meas_carrier_list.serv_ssb & 0xf,
+                'serving_cell_index': meas_carrier_list.serv_cell_index,
                 'serving_rsrp': serv_rsrp,
                 'serving_rx_beam': [b if b != 0xffff else None for b in (meas_carrier_list.serv_rx_beam_0, meas_carrier_list.serv_rx_beam_1)],
                 'cells': [],

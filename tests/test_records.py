@@ -30,7 +30,7 @@ class TestNrRecords(unittest.TestCase):
         self.assertEqual(result['records'], [{
             'type': 'nr_ml1_meas_db', 'version': '2.7',
             'layers': [{
-                'arfcn': 397465, 'serving_pci': 710, 'serving_ssb': 0,
+                'arfcn': 397465, 'serving_pci': 710, 'serving_ssb': 0, 'serving_cell_index': 0,
                 'serving_rsrp': [None, None], 'serving_rx_beam': [None, None],
                 'cells': [{
                     'pci': 710, 'pbch_sfn': 126, 'rsrp': -107.8203125, 'rsrq': -11.921875,
