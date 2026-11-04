@@ -73,6 +73,7 @@ class DiagNrLogParser:
     # ML1
     def parse_nr_ml1_meas_db_update(self, pkt_header, pkt_body: bytes, args: dict):
         stdout = ''
+        layer_records = []
         pkt_ver = self.nr_pkt_ver._make(struct.unpack('<HH', pkt_body[0:4]))
         num_layers = 0
         current_offset = 0
@@ -125,6 +126,19 @@ class DiagNrLogParser:
                     meas_carrier_list = meas_carrier_list_struct_v3._make(struct.unpack('<IBBHBB2sIIIIHHH2sHH', pkt_body[current_offset:current_offset+40]))
                     current_offset += 40
 
+            serv_rsrp = [self._q7(meas_carrier_list.serv_rsrp_rx_0), self._q7(meas_carrier_list.serv_rsrp_rx_1)]
+            if isinstance(meas_carrier_list, meas_carrier_list_struct_v3):
+                serv_rsrp += [self._q7(meas_carrier_list.serv_rsrp_rx_2), self._q7(meas_carrier_list.serv_rsrp_rx_3)]
+            layer_record = {
+                'arfcn': meas_carrier_list.raster_arfcn,
+                'serving_pci': meas_carrier_list.serv_cell_pci,
+                'serving_ssb': meas_carrier_list.serv_ssb & 0xf,
+                'serving_rsrp': serv_rsrp,
+                'serving_rx_beam': [b if b != 0xffff else None for b in (meas_carrier_list.serv_rx_beam_0, meas_carrier_list.serv_rx_beam_1)],
+                'cells': [],
+            }
+            layer_records.append(layer_record)
+
             if pkt_ver.rel_maj == 0x02:
                 rsrp_str = 'RSRP: {:.2f}/{:.2f}'.format(
                     self.parse_float_q7(meas_carrier_list.serv_rsrp_rx_0), self.parse_float_q7(meas_carrier_list.serv_rsrp_rx_1),
@@ -156,6 +170,14 @@ class DiagNrLogParser:
                 cell_list_struct = namedtuple('QcDiagNrMl1Packet', 'pci pbch_sfn num_beams null_0 cell_quality_rsrp cell_quality_rsrq')
                 cell_list = cell_list_struct._make(struct.unpack('<HHB3sII', pkt_body[current_offset:current_offset+16]))
                 current_offset += 16
+                cell_record = {
+                    'pci': cell_list.pci,
+                    'pbch_sfn': cell_list.pbch_sfn,
+                    'rsrp': self._q7(cell_list.cell_quality_rsrp),
+                    'rsrq': self._q7(cell_list.cell_quality_rsrq),
+                    'beams': [],
+                }
+                layer_record['cells'].append(cell_record)
                 stdout += "└── Cell {}: PCI: {:4d}, PBCH SFN: {}, RSRP: {:.2f}, RSRQ: {:.2f}, Num Beams: {}\n".format(
                     cell, cell_list.pci, cell_list.pbch_sfn,
                     self.parse_float_q7(cell_list.cell_quality_rsrp), self.parse_float_q7(cell_list.cell_quality_rsrq),
@@ -170,6 +192,7 @@ class DiagNrLogParser:
                             continue
                         beam_meas = beam_meas_struct._make(struct.unpack('<HHHHIQIIIIII', beam_meas_data))
                         current_offset += len(beam_meas_data)
+                        cell_record['beams'].append(self._nr_beam_record(beam_meas, None))
                         stdout += "    └── Beam {}: SSB[{}] Beam ID: {}/{}, RSRP: {:.2f}/{:.2f}, Filtered RSRP/RSRQ (Nr2Nr): {:.2f}/{:.2f}, Filtered RSRP/RSRQ (L2Nr): {:.2f}/{:.2f}\n".format(
                             beam, beam_meas.ssb_index,
                             beam_meas.rx_beam_0, beam_meas.rx_beam_1,
@@ -184,6 +207,7 @@ class DiagNrLogParser:
                             continue
                         beam_meas = beam_meas_struct_v3._make(struct.unpack('<HHHHIQIIIIIIIIIIIIIIII', beam_meas_data))
                         current_offset += len(beam_meas_data)
+                        cell_record['beams'].append(self._nr_beam_record(beam_meas, [beam_meas.unk_0, beam_meas.unk_1]))
                         stdout += "    └── Beam {}: SSB[{}] Beam ID: {}/{}, RSRP: {:.2f}/{:.2f}, RSRQ: {:.2f}/{:.2f}, Filtered RSRP/RSRQ (Nr2Nr): {:.2f}/{:.2f}, Filtered RSRP/RSRQ (L2Nr): {:.2f}/{:.2f}\n".format(
                             beam, beam_meas.ssb_index,
                             beam_meas.rx_beam_0, beam_meas.rx_beam_1,
@@ -194,7 +218,30 @@ class DiagNrLogParser:
                         )
 
         pkt_ts = util.parse_qxdm_ts(pkt_header.timestamp)
-        return {'stdout': stdout.rstrip(), 'ts': pkt_ts}
+        record = {
+            'type': 'nr_ml1_meas_db',
+            'version': '{}.{}'.format(pkt_ver.rel_maj, pkt_ver.rel_min),
+            'layers': layer_records,
+        }
+        return {'stdout': stdout.rstrip(), 'ts': pkt_ts, 'records': [record]}
+
+    def _q7(self, data_to_convert: int) -> float | None:
+        # Record value for a Q7 field: the modem logs 0 when there is no measurement.
+        if data_to_convert == 0:
+            return None
+        return self.parse_float_q7(data_to_convert)
+
+    def _nr_beam_record(self, beam_meas, rsrq_raw):
+        record = {
+            'ssb_index': beam_meas.ssb_index,
+            'rx_beam': [beam_meas.rx_beam_0, beam_meas.rx_beam_1],
+            'rsrp': [self._q7(beam_meas.rx_beam_info_rsrp_0), self._q7(beam_meas.rx_beam_info_rsrp_1)],
+            'filtered_rsrp': self._q7(beam_meas.nr2nr_filtered_beam_rsrp_l3),
+            'filtered_rsrq': self._q7(beam_meas.nr2nr_filtered_beam_rsrq_l3),
+        }
+        if rsrq_raw is not None:
+            record['rsrq'] = [self._q7(x) for x in rsrq_raw]
+        return record
 
     # RRC
     def parse_nr_mib_info(self, pkt_header, pkt_body: bytes, args: dict):
@@ -233,7 +280,14 @@ class DiagNrLogParser:
             stdout = 'NR MIB: NR-ARFCN: {}, PCI: {:4d}, SFN: {}, SCS: {}'.format(item.nrarfcn, item.pci, sfn, scs_str)
         else:
             stdout = 'NR MIB: NR-ARFCN: {}, PCI: {:4d}, SFN: {}'.format(item.nrarfcn, item.pci, sfn)
-        return {'stdout': stdout, 'ts': pkt_ts}
+        record = {
+            'type': 'nr_mib',
+            'arfcn': item.nrarfcn,
+            'pci': item.pci,
+            'sfn': sfn,
+            'scs_khz': scs_map.get(scs),
+        }
+        return {'stdout': stdout, 'ts': pkt_ts, 'records': [record]}
 
     def parse_nr_rrc_scell_info(self, pkt_header, pkt_body: bytes, args: dict):
         pkt_ts = util.parse_qxdm_ts(pkt_header.timestamp)
@@ -287,7 +341,20 @@ class DiagNrLogParser:
         else:
             stdout = 'NR RRC SCell Info: NR-ARFCN: {}/{}, Bandwidth: {}/{} MHz, Band: {}, PCI: {:4d}, MCC: {}, MNC: {}, {}'.format(item.dl_nrarfcn,
                 item.ul_nrarfcn, item.dl_bandwidth, item.ul_bandwidth, item.band, item.pci, item.mcc, item.mnc, tac_cid_fmt)
-        return {'stdout': stdout, 'ts': pkt_ts}
+        record = {
+            'type': 'nr_serving_cell',
+            'pci': item.pci,
+            'dl_arfcn': item.dl_nrarfcn,
+            'ul_arfcn': item.ul_nrarfcn,
+            'dl_bandwidth_mhz': item.dl_bandwidth,
+            'ul_bandwidth_mhz': item.ul_bandwidth,
+            'band': item.band,
+            'cell_id': item.cell_id,
+            'mcc': '{:03}'.format(item.mcc),
+            'mnc': '{:0{}}'.format(item.mnc, item.mnc_digit if item.mnc_digit in (2, 3) else 1),
+            'tac': item.tac,
+        }
+        return {'stdout': stdout, 'ts': pkt_ts, 'records': [record]}
 
     def parse_nr_rrc_conf_info(self, pkt_header, pkt_body: bytes, args: dict):
         pass
@@ -487,7 +554,8 @@ class DiagNrLogParser:
                 device_usec = ts_usec,
                 metadata = gsmtapv3_metadata)
 
-            return {'layer': 'rrc', 'cp': [gsmtap_hdr + msg_content], 'ts': pkt_ts}
+            return {'layer': 'rrc', 'cp': [gsmtap_hdr + msg_content], 'ts': pkt_ts,
+                    'records': [self._nr_rrc_record(item, pkt_ver, ncgi, nr_pdu_id_gsmtap.name, len(msg_content))]}
         else:
             if item.pdu_id in rrc_type_map_stdout.keys():
                 type_str = rrc_type_map_stdout[item.pdu_id]
@@ -497,7 +565,29 @@ class DiagNrLogParser:
             stdout += "NR RRC OTA Packet: NR-ARFCN: {}, PCI: {}, Type: {}\n".format(item.nrarfcn, item.pci, type_str)
             stdout += "NR RRC OTA Packet: Body: {}".format(binascii.hexlify(msg_content).decode())
 
-            return {'layer': 'rrc', 'stdout': stdout, 'ts': pkt_ts}
+            return {'layer': 'rrc', 'stdout': stdout, 'ts': pkt_ts,
+                    'records': [self._nr_rrc_record(item, pkt_ver, ncgi, type_str, len(msg_content))]}
+
+    def _nr_rrc_record(self, item, pkt_ver: int, ncgi, channel: str, length: int):
+        sfn_subfn = item.sfn_subfn
+        if isinstance(sfn_subfn, bytes):
+            sfn_subfn = int.from_bytes(sfn_subfn, 'little')
+        record = {
+            'type': 'nr_rrc_ota',
+            'version': pkt_ver,
+            'pci': item.pci,
+            'arfcn': item.nrarfcn,
+            'pdu_id': item.pdu_id,
+            'channel': channel,
+            'direction': 'ul' if channel.upper().startswith('UL_') or channel.upper() == 'RRC_RECONF_COMPLETE' else 'dl',
+            # Raw SFN/subframe field as logged; the bit layout differs between log versions.
+            'sfn_subfn_raw': sfn_subfn,
+            'length': length,
+        }
+        if ncgi:
+            mcc_mnc = util.unpack_mcc_mnc(ncgi[36:60].bytes)
+            record['ncgi'] = {'mcc': mcc_mnc[0], 'mnc': mcc_mnc[1], 'cell_id': ncgi[0:36].uint}
+        return record
 
     def parse_nr_cacombos(self, pkt_header, pkt_body: bytes, args: dict):
         pkt_ts = util.parse_qxdm_ts(pkt_header.timestamp)
@@ -544,7 +634,16 @@ class DiagNrLogParser:
                 stdout = '5GMM State: {}/{}/{}, MCC/MNC: {}/{}, TAC: {:6x}, GUTI: {}'.format(
                     item.mm_state, item.mm_substate, item.mm_update_status, plmn_id[0], plmn_id[1], tac, guti_str
                 )
-            return {'stdout': stdout, 'ts': pkt_ts}
+            record = {
+                'type': 'nr_mm_state',
+                'mm_state': item.mm_state,
+                'mm_substate': item.mm_substate,
+                'mm_update_status': item.mm_update_status,
+                'mcc': plmn_id[0],
+                'mnc': plmn_id[1],
+                'tac': tac,
+            }
+            return {'stdout': stdout, 'ts': pkt_ts, 'records': [record]}
         else:
             if self.parent:
                 self.parent.logger.log(logging.WARNING, 'Unknown NR MM State packet, version {}.{}'.format(pkt_ver.rel_maj, pkt_ver.rel_min))
@@ -575,9 +674,28 @@ class DiagNrLogParser:
                 device_sec = ts_sec,
                 device_usec = ts_usec)
 
-            return {'layer': 'nas', 'cp': [gsmtap_hdr + msg_content], 'ts': pkt_ts, 'stdout': stdout}
+            record = {
+                'type': 'nr_nas',
+                'log_code': '{:#06x}'.format(cmd_id),
+                'direction': None if cmd_id == 0xB814 else ('ul' if cmd_id & 0x1 else 'dl'),
+                'plain': plain,
+                'message_type': self._nas_5gs_message_type(msg_content, plain),
+                'length': len(msg_content),
+            }
+            return {'layer': 'nas', 'cp': [gsmtap_hdr + msg_content], 'ts': pkt_ts, 'stdout': stdout, 'records': [record]}
         else:
             if self.parent:
                 self.parent.logger.log(logging.WARNING, 'Unknown NR NAS Message packet version {:#x}'.format(pkt_ver))
                 self.parent.logger.log(logging.DEBUG, "Body: {}".format(util.xxd_oneline(pkt_body)))
             return None
+
+    def _nas_5gs_message_type(self, msg_content: bytes, plain: bool):
+        # TS 24.501 9.1: plain 5GMM/5GSM messages carry the message type at octet 3 (5GMM) or 4 (5GSM).
+        if not plain or len(msg_content) < 3:
+            return None
+        epd = msg_content[0]
+        if epd == 0x7e:
+            return msg_content[2]
+        if epd == 0x2e and len(msg_content) >= 4:
+            return msg_content[3]
+        return None

@@ -122,6 +122,7 @@ def scat_main():
 
     ip_group.add_argument('-F', '--pcap-file', help='Write GSMTAP packets directly to specified PCAP(NG) file')
     ip_group.add_argument('--pcapng-file', help='Same as -F/--pcap-file, but explicitly use PCAPNG')
+    ip_group.add_argument('-J', '--jsonl-file', help='Write decoded records and GSMTAP packets as JSON lines to the specified file')
     ip_group.add_argument('-C', '--combine-stdout', action='store_true', help='Write standard output messages as osmocore log file, along with other GSMTAP packets.')
 
     args = parser.parse_args()
@@ -182,6 +183,9 @@ def scat_main():
     if args.pcapng_file:
         if not(args.pcap_file and args.pcap_file == args.pcapng_file):
             writer.append(scat.writers.PcapngWriter(args.pcapng_file, GSMTAP_PORT, IP_OVER_UDP_PORT))
+
+    if args.jsonl_file:
+        writer.append(scat.writers.JsonlWriter(args.jsonl_file))
 
     current_parser = parser_dict[args.type]
     current_parser.set_io_device(io_device)

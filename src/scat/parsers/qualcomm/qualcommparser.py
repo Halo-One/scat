@@ -674,6 +674,10 @@ class QualcommParser(AbstractParser):
                 for sock_content in parse_result['up']:
                     any(map(lambda x: x.write_up(sock_content, radio_id, ts), self.writer))
 
+        if 'records' in parse_result:
+            for record in parse_result['records']:
+                any(map(lambda x: x.write_record(record, radio_id, ts), self.writer))
+
         if 'stdout' in parse_result:
             if len(parse_result['stdout']) > 0:
                 if self.combine_stdout:

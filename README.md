@@ -86,6 +86,8 @@ Please see the [wiki page for advanced options](https://github.com/fgsect/scat/w
 SCAT version up to 1.1.0 required specifying the Samsung baseband type manually using `-m`.
 As SCAT now autodetects the Samsung baseband type, for SCAT 1.2.0 and above this option is only required when analyzing the raw SDM file without start response.
 
+`-J FILE` (`--jsonl-file`) writes JSON lines next to the GSMTAP output: one line per control plane packet (with its frame number in a PCAP written by the same run), user plane packet length, and structured record decoded from log items. Structured records are currently produced for the Qualcomm NR ML1 measurement database, MIB, serving cell information, RRC OTA, NAS and 5GMM state items.
+
 ### USB
 Accessing the baseband diagnostics via USB:
 
